@@ -1,7 +1,12 @@
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
 
+#include <chrono>
+
 #include "rootsift.hpp"
+
+
+#define IMG_DIR "~/data/reichstag/dense/images"
 
 
 void openCVSIFTDetect(const cv::Mat image) {
@@ -30,8 +35,15 @@ int main(int argc, const char* argv[]) {
     // load in greyscale input image
     const cv::Mat input_img = cv::imread(argv[1], 0);
 
+    clock_t start = clock();
     openCVSIFTDetect(input_img);
+    printf( "Time to compute openCV SIFT: %0.2f\n",
+            ((float)clock() - start) / CLOCKS_PER_SEC );
+
+    start = clock();
     meSIFTDetect(input_img);
+    printf( "Time to compute meSIFT: %0.2f\n",
+            ((float)clock() - start) / CLOCKS_PER_SEC );
 
     return 0;
 }

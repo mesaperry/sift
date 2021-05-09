@@ -8,3 +8,4 @@ void meSIFT( InputArray,
              vector<KeyPoint>&,
              OutputArray,
              bool );
+             
