@@ -9,7 +9,9 @@
 #define IMG_DIR "~/data/reichstag/dense/images"
 
 
-void openCVSIFTDetect(const cv::Mat image) {
+void
+openCVSIFTDetect( const cv::Mat image )
+{
     cv::SiftFeatureDetector detector;
     std::vector<cv::KeyPoint> keypoints;
     detector.detect(image, keypoints);
@@ -20,7 +22,9 @@ void openCVSIFTDetect(const cv::Mat image) {
     cv::imwrite("opencv_res.jpg", output);
 }
 
-void meSIFTDetect(const cv::Mat image) {
+void
+meSIFTDetect( const cv::Mat image )
+{
     std::vector<cv::KeyPoint> keypoints;
     meSIFT(image, cv::noArray(), keypoints, cv::noArray(), false);
 
@@ -31,7 +35,9 @@ void meSIFTDetect(const cv::Mat image) {
 }
 
 
-int main(int argc, const char* argv[]) {
+int
+main( int argc, const char* argv[] )
+{
     // load in greyscale input image
     const cv::Mat input_img = cv::imread(argv[1], 0);
 
