@@ -1,6 +1,14 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include "rootsift.hpp"
 
+#include <iostream>
+#include <chrono>
+#include <pthread.h>
+
+
+
+// number of threads to parallelize across
+static const int N_THREADS = 1;
 
 // SIFT parameters
 static const int N_FEATURES = 0;
@@ -251,7 +259,7 @@ adjustLocalExtrema( const std::vector<cv::Mat>& dog_pyr, cv::KeyPoint& kpt, int 
 }
 
 static float
-calcOrientationHist( const cv::Mat& img, cv::Point pt, int radius,
+calcOrientationHist( const cv::Mat& img, const cv::Point& pt, int radius,
                      float sigma, float* hist, int n )
 {
     int i, j, k, len = (radius*2+1)*(radius*2+1);
@@ -413,7 +421,7 @@ descriptorSize()
 }
 
 static void
-calcSIFTDescriptor( const cv::Mat& img, cv::Point2f ptf, float ori, float scl,
+calcSIFTDescriptor( const cv::Mat& img, const cv::Point2f& ptf, float ori, float scl,
                     int d, int n, float* dst )
 {
     cv::Point pt(cvRound(ptf.x), cvRound(ptf.y));
@@ -555,33 +563,67 @@ calcSIFTDescriptor( const cv::Mat& img, cv::Point2f ptf, float ori, float scl,
 #endif
 }
 
+static void *
+calcSIFTDescHelper( void *td )
+{
+    int d = SIFT_DESCR_WIDTH, n = SIFT_DESCR_HIST_BINS;
+    struct thread_data *tdd = (struct thread_data *)td;
+
+    for ( size_t i = tdd->thread_id; i < tdd->keypoints.size(); i += N_THREADS ) {
+        cv::KeyPoint kpt = tdd->keypoints[i];
+        int octave, layer;
+        float scale;
+        unpackOctave(kpt, octave, layer, scale);
+        CV_Assert(octave >= tdd->firstOctave && layer <= tdd->nOctaveLayers+2);
+        float size=kpt.size*scale;
+        cv::Point2f ptf(kpt.pt.x*scale, kpt.pt.y*scale);
+        const cv::Mat& img = tdd->gpyr[(octave - tdd->firstOctave)*(tdd->nOctaveLayers + 3) + layer];
+
+        float angle = 360.f - kpt.angle;
+        if(std::abs(angle - 360.f) < FLT_EPSILON)
+            angle = 0.f;
+        calcSIFTDescriptor(img, ptf, angle, size*0.5f, d, n, tdd->descriptors.ptr<float>((int)i));
+
+        // if (tdd->keypoints.size() - i < 15) {
+        //     printf("thread %lu computed descriptor %lu\n", tdd->thread_id, i);
+        // }
+    }
+
+    return nullptr;
+}
+
+
 static void
 calcDescriptors( const std::vector<cv::Mat>& gpyr,
                  const std::vector<cv::KeyPoint>& keypoints,
                  cv::Mat& descriptors, int nOctaveLayers, int firstOctave )
 {
-    int d = SIFT_DESCR_WIDTH, n = SIFT_DESCR_HIST_BINS;
+    std::array<pthread_t, N_THREADS> threads;
+    std::vector<struct thread_data> td(N_THREADS, {gpyr, keypoints, descriptors});
 
-    for( size_t i = 0; i < keypoints.size(); i++ )
+    // start threads
+    for( size_t i = 0; i < N_THREADS; i++ )
     {
-        cv::KeyPoint kpt = keypoints[i];
-        int octave, layer;
-        float scale;
-        unpackOctave(kpt, octave, layer, scale);
-        CV_Assert(octave >= firstOctave && layer <= nOctaveLayers+2);
-        float size=kpt.size*scale;
-        cv::Point2f ptf(kpt.pt.x*scale, kpt.pt.y*scale);
-        const cv::Mat& img = gpyr[(octave - firstOctave)*(nOctaveLayers + 3) + layer];
+        td[i].nOctaveLayers = nOctaveLayers;
+        td[i].firstOctave = firstOctave;
+        td[i].thread_id = i;
+        int rc = pthread_create(&threads[i], NULL, calcSIFTDescHelper, &td[i]);
+        assert(!rc);
+        printf("Created thread %lu\n", i);
+    }
 
-        float angle = 360.f - kpt.angle;
-        if(std::abs(angle - 360.f) < FLT_EPSILON)
-            angle = 0.f;
-        calcSIFTDescriptor(img, ptf, angle, size*0.5f, d, n, descriptors.ptr<float>((int)i));
+    // wait for threads to finish
+    void *status;
+    for ( size_t i = 0; i < N_THREADS; i++ )
+    {
+        int rc = pthread_join(threads[i], &status);
+        assert(!rc);
     }
 }
 
 void
-meSIFT( cv::InputArray _image, cv::InputArray _mask, std::vector<cv::KeyPoint>& keypoints,
+meSIFT( cv::InputArray& _image, cv::InputArray& _mask,
+        std::vector<cv::KeyPoint>& keypoints,
         cv::OutputArray _descriptors, bool useProvidedKeypoints )
 {
     int firstOctave = -1, actualNOctaves = 0, actualNLayers = 0;
@@ -612,19 +654,34 @@ meSIFT( cv::InputArray _image, cv::InputArray _mask, std::vector<cv::KeyPoint>& 
         actualNOctaves = maxOctave - firstOctave + 1;
     }
 
+    clock_t start = clock();
+
     cv::Mat base = createInitialImage(image, firstOctave < 0, (float)SIGMA);
     std::vector<cv::Mat> gpyr, dogpyr;
     int nOctaves = actualNOctaves > 0 ? actualNOctaves : cvRound(log( (double)std::min( base.cols, base.rows ) ) / log(2.) - 2) - firstOctave;
 
+    printf( "Time to init image and pyramids: %0.2f\n",
+            ((float)clock() - start) / CLOCKS_PER_SEC );
+    start = clock();
+
     //double t, tf = getTickFrequency();
     //t = (double)getTickCount();
     buildGaussianPyramid(base, gpyr, nOctaves);
+
+    printf( "Time to build gaussian pyramid: %0.2f\n",
+            ((float)clock() - start) / CLOCKS_PER_SEC );
+    start = clock();
+
     buildDoGPyramid(gpyr, dogpyr);
+
+    printf( "Time to build DoG pyramid: %0.2f\n",
+            ((float)clock() - start) / CLOCKS_PER_SEC );
+    start = clock();
 
     //t = (double)getTickCount() - t;
     //printf("pyramid construction time: %g\n", t*1000./tf);
 
-    if( !useProvidedKeypoints )
+    if( !useProvidedKeypoints ) // detect keypoints
     {
         //t = (double)getTickCount();
         findScaleSpaceExtrema(gpyr, dogpyr, keypoints);
@@ -654,7 +711,11 @@ meSIFT( cv::InputArray _image, cv::InputArray _mask, std::vector<cv::KeyPoint>& 
         //cv::KeyPointsFilter::runByPixelsMask( cv::KeyPoints, mask );
     }
 
-    if( _descriptors.needed() )
+    printf( "Time to detect keypoints: %0.2f\n",
+            ((float)clock() - start) / CLOCKS_PER_SEC );
+    start = clock();
+
+    if( _descriptors.needed() ) // compute descriptors
     {
         //t = (double)getTickCount();
         int dsize = descriptorSize();
@@ -665,4 +726,7 @@ meSIFT( cv::InputArray _image, cv::InputArray _mask, std::vector<cv::KeyPoint>& 
         //t = (double)getTickCount() - t;
         //printf("descriptor extraction time: %g\n", t*1000./tf);
     }
+
+    printf( "Time to extract descriptors: %0.2f\n",
+            ((float)clock() - start) / CLOCKS_PER_SEC );
 }
