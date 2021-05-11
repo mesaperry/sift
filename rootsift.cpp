@@ -1,14 +1,14 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include "rootsift.hpp"
+#include "ctpl_stl.h"
 
 #include <iostream>
 #include <chrono>
 #include <pthread.h>
 
 
-
 // number of threads to parallelize across
-static const int N_THREADS = 1;
+static const int N_THREADS = 8;
 
 // SIFT parameters
 static const int N_FEATURES = 0;
@@ -421,7 +421,8 @@ descriptorSize()
 }
 
 static void
-calcSIFTDescriptor( const cv::Mat& img, const cv::Point2f& ptf, float ori, float scl,
+calcSIFTDescriptor( const cv::Mat& img, const cv::Point2f& ptf,
+                    float ori, float scl,
                     int d, int n, float* dst )
 {
     cv::Point pt(cvRound(ptf.x), cvRound(ptf.y));
@@ -563,33 +564,30 @@ calcSIFTDescriptor( const cv::Mat& img, const cv::Point2f& ptf, float ori, float
 #endif
 }
 
-static void *
-calcSIFTDescHelper( void *td )
+static void
+calcSIFTDescHelper( int id, void *td )
 {
     int d = SIFT_DESCR_WIDTH, n = SIFT_DESCR_HIST_BINS;
     struct thread_data *tdd = (struct thread_data *)td;
+    unsigned long i = tdd->thread_id;
 
-    for ( size_t i = tdd->thread_id; i < tdd->keypoints.size(); i += N_THREADS ) {
-        cv::KeyPoint kpt = tdd->keypoints[i];
-        int octave, layer;
-        float scale;
-        unpackOctave(kpt, octave, layer, scale);
-        CV_Assert(octave >= tdd->firstOctave && layer <= tdd->nOctaveLayers+2);
-        float size=kpt.size*scale;
-        cv::Point2f ptf(kpt.pt.x*scale, kpt.pt.y*scale);
-        const cv::Mat& img = tdd->gpyr[(octave - tdd->firstOctave)*(tdd->nOctaveLayers + 3) + layer];
+    cv::KeyPoint kpt = tdd->keypoints[i];
+    int octave, layer;
+    float scale;
+    unpackOctave(kpt, octave, layer, scale);
+    CV_Assert(octave >= tdd->firstOctave && layer <= tdd->nOctaveLayers+2);
+    float size=kpt.size*scale;
+    cv::Point2f ptf(kpt.pt.x*scale, kpt.pt.y*scale);
+    const cv::Mat& img = tdd->gpyr[(octave - tdd->firstOctave)*(tdd->nOctaveLayers + 3) + layer];
 
-        float angle = 360.f - kpt.angle;
-        if(std::abs(angle - 360.f) < FLT_EPSILON)
-            angle = 0.f;
-        calcSIFTDescriptor(img, ptf, angle, size*0.5f, d, n, tdd->descriptors.ptr<float>((int)i));
+    float angle = 360.f - kpt.angle;
+    if(std::abs(angle - 360.f) < FLT_EPSILON)
+        angle = 0.f;
+    calcSIFTDescriptor(img, ptf, angle, size*0.5f, d, n, tdd->descriptors.ptr<float>((int)i));
 
-        // if (tdd->keypoints.size() - i < 15) {
-        //     printf("thread %lu computed descriptor %lu\n", tdd->thread_id, i);
-        // }
-    }
-
-    return nullptr;
+    // if (tdd->keypoints.size() - i < 15) {
+    //     printf("thread %d computed descriptor %lu\n", id, i);
+    // }
 }
 
 
@@ -598,26 +596,19 @@ calcDescriptors( const std::vector<cv::Mat>& gpyr,
                  const std::vector<cv::KeyPoint>& keypoints,
                  cv::Mat& descriptors, int nOctaveLayers, int firstOctave )
 {
-    std::array<pthread_t, N_THREADS> threads;
-    std::vector<struct thread_data> td(N_THREADS, {gpyr, keypoints, descriptors});
+    ctpl::thread_pool p(N_THREADS);
+    std::vector<struct thread_data> td(keypoints.size(), {gpyr, keypoints, descriptors});
 
-    // start threads
-    for( size_t i = 0; i < N_THREADS; i++ )
-    {
+    std::vector<std::future<void>> results(keypoints.size());
+    for (unsigned long i = 0; i < keypoints.size(); ++i) {
         td[i].nOctaveLayers = nOctaveLayers;
         td[i].firstOctave = firstOctave;
         td[i].thread_id = i;
-        int rc = pthread_create(&threads[i], NULL, calcSIFTDescHelper, &td[i]);
-        assert(!rc);
-        printf("Created thread %lu\n", i);
-    }
 
-    // wait for threads to finish
-    void *status;
-    for ( size_t i = 0; i < N_THREADS; i++ )
-    {
-        int rc = pthread_join(threads[i], &status);
-        assert(!rc);
+        results[i] = p.push(calcSIFTDescHelper, &td[i]);
+    }
+    for (unsigned long i = 0; i < keypoints.size(); ++i) {
+        results[i].get();
     }
 }
 
