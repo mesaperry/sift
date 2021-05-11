@@ -1,5 +1,4 @@
 cmake_minimum_required( VERSION 3.0 )
-# set( CMAKE_TOOLCHAIN_FILE "~/devel/vcpkg/scripts/buildsystems/vcpkg.cmake" )
 
 # Create Project
 project( main )
