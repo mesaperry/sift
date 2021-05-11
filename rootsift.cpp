@@ -8,7 +8,7 @@
 
 
 // number of threads to parallelize across
-static const int N_THREADS = 8;
+static const int N_THREADS = 4;
 
 // SIFT parameters
 static const int N_FEATURES = 0;
@@ -114,8 +114,7 @@ buildGaussianPyramid( const cv::Mat& base, std::vector<cv::Mat>& pyr, int nOctav
         sig[i] = std::sqrt(sig_total*sig_total - sig_prev*sig_prev);
     }
 
-    for( int o = 0; o < nOctaves; o++ )
-    {
+    for (int o = 0; o < nOctaves; o++) {
         for( int i = 0; i < N_OCTAVE_LAYERS + 3; i++ )
         {
             cv::Mat& dst = pyr[o*(N_OCTAVE_LAYERS + 3) + i];
@@ -126,7 +125,7 @@ buildGaussianPyramid( const cv::Mat& base, std::vector<cv::Mat>& pyr, int nOctav
             {
                 const cv::Mat& src = pyr[(o-1)*(N_OCTAVE_LAYERS + 3) + N_OCTAVE_LAYERS];
                 resize(src, dst, cv::Size(src.cols/2, src.rows/2),
-                       0, 0, cv::INTER_NEAREST);
+                        0, 0, cv::INTER_NEAREST);
             }
             else
             {
@@ -584,10 +583,6 @@ calcSIFTDescHelper( int id, void *td )
     if(std::abs(angle - 360.f) < FLT_EPSILON)
         angle = 0.f;
     calcSIFTDescriptor(img, ptf, angle, size*0.5f, d, n, tdd->descriptors.ptr<float>((int)i));
-
-    // if (tdd->keypoints.size() - i < 15) {
-    //     printf("thread %d computed descriptor %lu\n", id, i);
-    // }
 }
 
 
@@ -598,17 +593,18 @@ calcDescriptors( const std::vector<cv::Mat>& gpyr,
 {
     ctpl::thread_pool p(N_THREADS);
     std::vector<struct thread_data> td(keypoints.size(), {gpyr, keypoints, descriptors});
-
-    std::vector<std::future<void>> results(keypoints.size());
     for (unsigned long i = 0; i < keypoints.size(); ++i) {
         td[i].nOctaveLayers = nOctaveLayers;
         td[i].firstOctave = firstOctave;
         td[i].thread_id = i;
+    }
 
+    std::vector<std::future<void>> results(keypoints.size());
+    for (unsigned long i = 0; i < keypoints.size(); ++i) {
         results[i] = p.push(calcSIFTDescHelper, &td[i]);
     }
     for (unsigned long i = 0; i < keypoints.size(); ++i) {
-        results[i].get();
+        results[i].wait();
     }
 }
 
